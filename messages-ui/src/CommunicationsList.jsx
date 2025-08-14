@@ -1,12 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 
-// .env:
-// VITE_API_URL=http://localhost:8080
-// VITE_AUTH_TOKEN=agent_api_key_24
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8080";
-const AUTH_TOKEN = import.meta.env.VITE_AUTH_TOKEN || "agent_api_key_24";
-const AUTH_HEADER = { Authorization: `Bearer ${AUTH_TOKEN}` };
-
 const roleFromDirection = (direction) =>
   direction === "outbound" ? "agent" : "lead";
 
@@ -16,11 +9,9 @@ const formatTime = (iso) => {
   return d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
 };
 
-const bubbleSide = (role) => (role === "agent" ? "justify-end" : "justify-start");
-const bubbleStyle = (role) =>
-  role === "agent" ? "bg-blue-600 text-white" : "bg-white text-gray-900";
+export default function CommunicationsList({ API_URL, AUTH_HEADER, theme }) {
+  const isDark = theme === "dark";
 
-export default function CommunicationsList() {
   // Список диалогов (пагинация)
   const [communications, setCommunications] = useState([]);
   const [nextCursor, setNextCursor] = useState(null);
@@ -39,16 +30,16 @@ export default function CommunicationsList() {
 
   const chatRef = useRef(null);
   const isLoadingOlderRef = useRef(false);
-  const bootedRef = useRef(false); // защита от двойного эффекта в StrictMode
+  const bootedRef = useRef(false);
 
-  // автоскролл вниз при появлении новых сообщений
+  // автоскролл вниз
   useEffect(() => {
     if (chatRef.current) {
       chatRef.current.scrollTop = chatRef.current.scrollHeight;
     }
   }, [messages, selected]);
 
-  // ------- API helper -------
+  // helper
   const fetchJSON = async (url, opts = {}) => {
     const r = await fetch(url, {
       headers: { "Content-Type": "application/json", ...AUTH_HEADER, ...(opts.headers || {}) },
@@ -58,7 +49,6 @@ export default function CommunicationsList() {
     return r.json();
   };
 
-  // Загрузка страницы диалогов (с дедупликацией)
   const loadDialogs = useCallback(
     async (cursor = null, limit = 20, preview = 10) => {
       if (loadingList) return;
@@ -67,7 +57,7 @@ export default function CommunicationsList() {
       try {
         const url = new URL(`${API_URL}/messages`);
         url.searchParams.set("limit", String(limit));
-        url.searchParams.set("offser", String(preview)); // сколько последних сообщений на карточку
+        url.searchParams.set("offser", String(preview)); // превью-сообщения
         if (cursor) url.searchParams.set("cursor", String(cursor));
 
         const data = await fetchJSON(url.toString());
@@ -75,7 +65,6 @@ export default function CommunicationsList() {
         setCommunications((prev) => {
           const map = new Map(prev.map((x) => [x.id, x]));
           for (const item of (data.communications || [])) map.set(item.id, item);
-          // стабильный порядок по id убыванию
           return Array.from(map.values()).sort((a, b) => b.id - a.id);
         });
         setNextCursor(data.next_cursor ?? null);
@@ -85,23 +74,22 @@ export default function CommunicationsList() {
         setLoadingList(false);
       }
     },
-    [loadingList]
+    [API_URL, AUTH_HEADER, loadingList]
   );
 
-  // Первая загрузка (блок от StrictMode)
+  // первая загрузка
   useEffect(() => {
     if (bootedRef.current) return;
     bootedRef.current = true;
     loadDialogs(null, 20, 10);
   }, [loadDialogs]);
 
-  // Выбор диалога
   const handleSelect = async (comm) => {
     setSelected(comm);
     setDialogError("");
     setMessages([]);
 
-    // 1) сразу покажем превью (последние N)
+    // мгновенно покажем превью
     const preview = (comm.last_messages || [])
       .slice()
       .sort((a, b) => (a.time || "").localeCompare(b.time || ""));
@@ -114,15 +102,13 @@ export default function CommunicationsList() {
     }));
     setMessages(previewNorm);
 
-    // курсор для старых
     const nextBefore = previewNorm.length ? previewNorm[0].time : null;
     setPaging({ next_before_time: nextBefore, limit: 50 });
 
-    // 2) дотянуть последнюю страницу и смержить без дублей
+    // подгрузим «реальную» последнюю страницу (merging)
     await loadLatestPage(comm.id, 50);
   };
 
-  // Последняя страница сообщений
   const loadLatestPage = async (commId, limit = 50) => {
     setLoadingDialog(true);
     setDialogError("");
@@ -156,7 +142,6 @@ export default function CommunicationsList() {
     }
   };
 
-  // Догрузить старые (при скролле вверх)
   const loadOlder = async () => {
     if (!selected || !paging.next_before_time || isLoadingOlderRef.current) return;
     isLoadingOlderRef.current = true;
@@ -174,25 +159,20 @@ export default function CommunicationsList() {
         role: roleFromDirection(m.direction),
       }));
 
-      // prepend старые
       setMessages((prev) => [...older, ...prev]);
-
       const nb = data.communication?.paging?.next_before_time || null;
       setPaging((p) => ({ ...p, next_before_time: nb }));
-    } catch (e) {
-      // можно показать уведомление
-    } finally {
+    } catch {}
+    finally {
       isLoadingOlderRef.current = false;
     }
   };
 
-  // Скролл
   const onScroll = (e) => {
     const el = e.currentTarget;
     if (el.scrollTop <= 0) loadOlder();
   };
 
-  // Отправка
   const sendMessage = async (e) => {
     e.preventDefault();
     const text = draft.trim();
@@ -214,45 +194,83 @@ export default function CommunicationsList() {
         method: "POST",
         body: JSON.stringify({ message: text }),
       });
-      // при желании — подтянуть реальный id:
-      // await loadLatestPage(selected.id, 50);
     } catch {
-      // откат
       setMessages((prev) => prev.filter((m) => m.id !== tmp.id));
       alert("Не удалось отправить сообщение");
     }
   };
 
+  // стили по теме
+  const sidebarCls =
+    "w-80 border-r " +
+    (isDark ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200");
+  const sidebarHeader = "p-4 border-b " + (isDark ? "border-gray-700" : "border-gray-200");
+  const sidebarItemBase =
+    "w-full text-left p-4 border-b transition-colors " +
+    (isDark
+      ? "border-gray-700 hover:bg-gray-700"
+      : "border-gray-200 hover:bg-gray-100");
+
+  const mainHeader =
+    "border-b p-4 " + (isDark ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200");
+  const chatArea = "flex-1 p-4 overflow-y-auto " + (isDark ? "bg-gray-900" : "bg-gray-50");
+  const inputWrap = "border-t p-4 " + (isDark ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200");
+  const inputCls =
+    "flex-1 px-4 py-2 rounded-lg border focus:outline-none " +
+    (isDark
+      ? "bg-gray-700 text-white border-gray-600 focus:border-blue-500"
+      : "bg-white text-gray-900 border-gray-300 focus:border-blue-500");
+
+  const bubbleSide = (role) => (role === "agent" ? "justify-end" : "justify-start");
+  const bubbleStyle = (role) =>
+    role === "agent"
+      ? "bg-blue-600 text-white"
+      : isDark
+        ? "bg-white text-gray-900"
+        : "bg-gray-100 text-gray-900";
+
   return (
-    <div className="min-h-screen bg-gray-900 flex">
+    <div className="min-h-[calc(100vh-57px)] flex">
       {/* Sidebar */}
-      <div className="w-80 bg-gray-800 border-r border-gray-700 flex flex-col">
-        <div className="p-4 border-b border-gray-700">
-          <h1 className="text-white text-lg font-semibold">Saved Messages</h1>
+      <div className={sidebarCls}>
+        <div className={sidebarHeader}>
+          <h1 className={isDark ? "text-white text-lg font-semibold" : "text-gray-900 text-lg font-semibold"}>
+            Saved Messages
+          </h1>
         </div>
 
         <div className="flex-1 overflow-y-auto">
-          {listError && <div className="p-3 text-red-300">{listError}</div>}
+          {listError && (
+            <div className={isDark ? "p-3 text-red-300" : "p-3 text-red-600"}>
+              {listError}
+            </div>
+          )}
+
           {communications.map((comm) => (
             <button
-              key={comm.id} // id уникален после дедупликации
+              key={comm.id}
               onClick={() => handleSelect(comm)}
               className={
-                "w-full text-left p-4 border-b border-gray-700 hover:bg-gray-700 transition-colors " +
-                (selected?.id === comm.id ? "bg-gray-700" : "")
+                sidebarItemBase + (selected?.id === comm.id
+                  ? isDark ? " bg-gray-700" : " bg-gray-100"
+                  : "")
               }
             >
               <div className="flex items-center justify-between mb-1">
-                <div className="text-white font-medium text-sm">Лид #{comm.lead_id}</div>
-                <div className="text-gray-400 text-xs">
+                <div className={isDark ? "text-white font-medium text-sm" : "text-gray-900 font-medium text-sm"}>
+                  Лид #{comm.lead_id}
+                </div>
+                <div className={isDark ? "text-gray-300 text-xs" : "text-gray-500 text-xs"}>
                   {comm.last_message?.time ? formatTime(comm.last_message.time) : ""}
                 </div>
               </div>
-              <div className="text-gray-300 text-sm mb-2 truncate">
+
+              <div className={isDark ? "text-gray-300 text-sm mb-2 truncate" : "text-gray-600 text-sm mb-2 truncate"}>
                 {comm.last_message?.text || "Сообщений нет"}
               </div>
+
               <div className="flex items-center justify-between">
-                <div className="flex items-center text-xs text-gray-400">
+                <div className={isDark ? "flex items-center text-xs text-gray-400" : "flex items-center text-xs text-gray-500"}>
                   <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"
                       d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -274,17 +292,23 @@ export default function CommunicationsList() {
           ))}
         </div>
 
-        <div className="p-3 border-t border-gray-700">
+        <div className={isDark ? "p-3 border-t border-gray-700" : "p-3 border-t border-gray-200"}>
           {nextCursor ? (
             <button
               onClick={() => loadDialogs(nextCursor, 20, 10)}
               disabled={loadingList}
-              className="w-full text-sm bg-gray-700 text-white px-3 py-2 rounded hover:bg-gray-600"
+              className={
+                "w-full text-sm rounded px-3 py-2 transition-colors " +
+                (isDark ? "bg-gray-700 text-white hover:bg-gray-600"
+                        : "bg-gray-200 text-gray-900 hover:bg-gray-300")
+              }
             >
               {loadingList ? "Загрузка..." : "Загрузить ещё"}
             </button>
           ) : (
-            <div className="text-xs text-gray-500 text-center">Больше диалогов нет</div>
+            <div className={isDark ? "text-xs text-gray-500 text-center" : "text-xs text-gray-500 text-center"}>
+              Больше диалогов нет
+            </div>
           )}
         </div>
       </div>
@@ -293,7 +317,7 @@ export default function CommunicationsList() {
       <div className="flex-1 flex flex-col">
         {selected ? (
           <>
-            <div className="bg-gray-800 border-b border-gray-700 p-4">
+            <div className={mainHeader}>
               <div className="flex items-center">
                 <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center mr-3">
                   <span className="text-white text-sm font-medium">
@@ -301,8 +325,12 @@ export default function CommunicationsList() {
                   </span>
                 </div>
                 <div>
-                  <h2 className="text-white font-semibold">Лид #{selected.lead_id}</h2>
-                  <p className="text-gray-400 text-sm">{selected.messages_count} сообщений</p>
+                  <h2 className={isDark ? "text-white font-semibold" : "text-gray-900 font-semibold"}>
+                    Лид #{selected.lead_id}
+                  </h2>
+                  <p className={isDark ? "text-gray-400 text-sm" : "text-gray-500 text-sm"}>
+                    {selected.messages_count} сообщений
+                  </p>
                 </div>
               </div>
             </div>
@@ -310,7 +338,7 @@ export default function CommunicationsList() {
             <div
               ref={chatRef}
               onScroll={onScroll}
-              className="flex-1 bg-gray-900 p-4 overflow-y-auto"
+              className={chatArea}
             >
               {loadingDialog && !messages.length ? (
                 <div className="flex items-center justify-center h-full">
@@ -321,31 +349,35 @@ export default function CommunicationsList() {
                   </div>
                 </div>
               ) : dialogError ? (
-                <div className="text-center text-red-300">{dialogError}</div>
+                <div className={isDark ? "text-center text-red-300" : "text-center text-red-600"}>
+                  {dialogError}
+                </div>
               ) : messages.length ? (
                 <div className="space-y-4">
                   {messages.map((m) => (
                     <div key={`${m.id}-${m.time}`} className={"flex " + bubbleSide(m.role)}>
                       <div className={"max-w-xs lg:max-w-md px-4 py-2 rounded-lg " + bubbleStyle(m.role)}>
                         <p className="text-sm whitespace-pre-wrap">{m.text}</p>
-                        <p className="text-xs text-gray-500 mt-1">{formatTime(m.time)}</p>
+                        <p className={isDark ? "text-xs text-gray-400 mt-1" : "text-xs text-gray-500 mt-1"}>
+                          {formatTime(m.time)}
+                        </p>
                       </div>
                     </div>
                   ))}
                 </div>
               ) : (
                 <div className="flex items-center justify-center h-full">
-                  <p className="text-gray-500">Сообщений пока нет</p>
+                  <p className={isDark ? "text-gray-500" : "text-gray-500"}>Сообщений пока нет</p>
                 </div>
               )}
             </div>
 
-            <div className="bg-gray-800 border-t border-gray-700 p-4">
+            <div className={inputWrap}>
               <form className="flex items-center space-x-2" onSubmit={sendMessage}>
                 <input
                   type="text"
                   placeholder="Введите сообщение..."
-                  className="flex-1 bg-gray-700 text-white px-4 py-2 rounded-lg border border-gray-600 focus:outline-none focus:border-blue-500"
+                  className={inputCls}
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
                 />
@@ -362,14 +394,18 @@ export default function CommunicationsList() {
             </div>
           </>
         ) : (
-          <div className="flex-1 flex items-center justify-center bg-gray-900">
+          <div className={chatArea + " flex items-center justify-center"}>
             <div className="text-center">
-              <svg className="mx-auto h-16 w-16 text-gray-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className={"mx-auto h-16 w-16 mb-4 " + (isDark ? "text-gray-600" : "text-gray-400")} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"
                   d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
               </svg>
-              <h3 className="text-lg font-medium text-gray-300 mb-2">Выберите диалог</h3>
-              <p className="text-gray-500">Слева список с превью и временем</p>
+              <h3 className={"text-lg font-medium mb-2 " + (isDark ? "text-gray-300" : "text-gray-700")}>
+                Выберите диалог
+              </h3>
+              <p className={isDark ? "text-gray-500" : "text-gray-500"}>
+                Слева список с превью и временем
+              </p>
             </div>
           </div>
         )}
