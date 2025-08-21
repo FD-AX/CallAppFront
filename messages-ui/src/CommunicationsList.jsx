@@ -1,5 +1,17 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 
+/**
+ * Компонент списка коммуникаций + чат + FAB "Новое SMS".
+ * Поддерживает светлую/тёмную тему через проп theme: "light" | "dark".
+ * Для отправки на произвольный номер использует POST /send-sms/.
+ *
+ * Пропсы:
+ *  - API_URL: string (например, http://localhost:8080)
+ *  - AUTH_HEADER: объект заголовков авторизации { Authorization: `Bearer ...` }
+ *  - theme: "dark" | "light"
+ *  - employeeUsername?: string (если известен логин сотрудника; по умолчанию agent24)
+ */
+
 const roleFromDirection = (direction) =>
   direction === "outbound" ? "agent" : "lead";
 
@@ -9,7 +21,12 @@ const formatTime = (iso) => {
   return d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
 };
 
-export default function CommunicationsList({ API_URL, AUTH_HEADER, theme }) {
+export default function CommunicationsList({
+  API_URL = import.meta.env.VITE_API_URL || "http://localhost:8080",
+  AUTH_HEADER = { Authorization: `Bearer ${import.meta.env.VITE_AUTH_TOKEN || "agent_api_key_24"}` },
+  theme = "dark",
+  employeeUsername = import.meta.env.VITE_EMPLOYEE_USERNAME || "agent24",
+}) {
   const isDark = theme === "dark";
 
   // Список диалогов (пагинация)
@@ -25,8 +42,17 @@ export default function CommunicationsList({ API_URL, AUTH_HEADER, theme }) {
   const [loadingDialog, setLoadingDialog] = useState(false);
   const [dialogError, setDialogError] = useState("");
 
-  // Отправка
+  // Отправка (в диалоге)
   const [draft, setDraft] = useState("");
+
+  // FAB "Новое SMS" (произвольный номер)
+  const [showNewSms, setShowNewSms] = useState(false);
+  const [newPhone, setNewPhone] = useState("");
+  const [newText, setNewText] = useState("");
+  const [sendingAdhoc, setSendingAdhoc] = useState(false);
+
+  const normPhone = (p) => p.replace(/[^\d+]/g, "").trim();
+  const isPhoneValid = (p) => /^\+?\d{7,20}$/.test(normPhone(p));
 
   const chatRef = useRef(null);
   const isLoadingOlderRef = useRef(false);
@@ -229,14 +255,63 @@ export default function CommunicationsList({ API_URL, AUTH_HEADER, theme }) {
         ? "bg-white text-gray-900"
         : "bg-gray-100 text-gray-900";
 
+  // --- FAB: Новое SMS ---
+  const openNewSms = () => {
+    setNewPhone(selected?.lead_phone || "");
+    setNewText("");
+    setShowNewSms(true);
+  };
+
+  const sendAdhoc = async () => {
+    const phone = normPhone(newPhone);
+    if (!isPhoneValid(phone)) {
+      alert("Укажите корректный номер (например, +19009009090)");
+      return;
+    }
+    const text = newText.trim();
+    if (!text) {
+      alert("Введите текст сообщения");
+      return;
+    }
+
+    setSendingAdhoc(true);
+    try {
+      await fetchJSON(`${API_URL}/send-sms/`, {
+        method: "POST",
+        body: JSON.stringify({
+          employee_username: employeeUsername,
+          lead_phone: phone,
+          message: text,
+        }),
+      });
+      setShowNewSms(false);
+      setNewPhone("");
+      setNewText("");
+      alert("SMS отправлено");
+    } catch (e) {
+      alert(e.message || "Не удалось отправить SMS");
+    } finally {
+      setSendingAdhoc(false);
+    }
+  };
+
   return (
-    <div className="min-h-[calc(100vh-57px)] flex">
+    <div className="min-h-[calc(100vh-57px)] flex relative">
       {/* Sidebar */}
       <div className={sidebarCls}>
         <div className={sidebarHeader}>
-          <h1 className={isDark ? "text-white text-lg font-semibold" : "text-gray-900 text-lg font-semibold"}>
-            Saved Messages
-          </h1>
+          <div className="flex items-center justify-between">
+            <h1 className={isDark ? "text-white text-lg font-semibold" : "text-gray-900 text-lg font-semibold"}>
+              Saved Messages
+            </h1>
+            <button
+              onClick={openNewSms}
+              className="text-sm bg-blue-600 text-white px-3 py-2 rounded-lg hover:bg-blue-700"
+              title="Отправить SMS на произвольный номер"
+            >
+              Новое SMS
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto">
@@ -306,7 +381,7 @@ export default function CommunicationsList({ API_URL, AUTH_HEADER, theme }) {
               {loadingList ? "Загрузка..." : "Загрузить ещё"}
             </button>
           ) : (
-            <div className={isDark ? "text-xs text-gray-500 text-center" : "text-xs text-gray-500 text-center"}>
+            <div className="text-xs text-gray-500 text-center">
               Больше диалогов нет
             </div>
           )}
@@ -355,8 +430,8 @@ export default function CommunicationsList({ API_URL, AUTH_HEADER, theme }) {
               ) : messages.length ? (
                 <div className="space-y-4">
                   {messages.map((m) => (
-                    <div key={`${m.id}-${m.time}`} className={"flex " + bubbleSide(m.role)}>
-                      <div className={"max-w-xs lg:max-w-md px-4 py-2 rounded-lg " + bubbleStyle(m.role)}>
+                    <div key={`${m.id}-${m.time}`} className={"flex " + (m.role === "agent" ? "justify-end" : "justify-start")}>
+                      <div className={"max-w-xs lg:max-w-md px-4 py-2 rounded-lg " + (m.role === "agent" ? "bg-blue-600 text-white" : isDark ? "bg-white text-gray-900" : "bg-gray-100 text-gray-900")}>
                         <p className="text-sm whitespace-pre-wrap">{m.text}</p>
                         <p className={isDark ? "text-xs text-gray-400 mt-1" : "text-xs text-gray-500 mt-1"}>
                           {formatTime(m.time)}
@@ -367,7 +442,7 @@ export default function CommunicationsList({ API_URL, AUTH_HEADER, theme }) {
                 </div>
               ) : (
                 <div className="flex items-center justify-center h-full">
-                  <p className={isDark ? "text-gray-500" : "text-gray-500"}>Сообщений пока нет</p>
+                  <p className="text-gray-500">Сообщений пока нет</p>
                 </div>
               )}
             </div>
@@ -403,13 +478,100 @@ export default function CommunicationsList({ API_URL, AUTH_HEADER, theme }) {
               <h3 className={"text-lg font-medium mb-2 " + (isDark ? "text-gray-300" : "text-gray-700")}>
                 Выберите диалог
               </h3>
-              <p className={isDark ? "text-gray-500" : "text-gray-500"}>
+              <p className="text-gray-500">
                 Слева список с превью и временем
               </p>
             </div>
           </div>
         )}
       </div>
+
+      {/* Модалка для ввода номера и текста */}
+      {showNewSms && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center">
+          {/* фон */}
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setShowNewSms(false)}
+          />
+          {/* карточка */}
+          <div className={
+            "relative w-full sm:w-[520px] mx-auto rounded-t-2xl sm:rounded-2xl p-4 sm:p-6 overflow-hidden " +
+            (isDark ? "bg-gray-800 text-white" : "bg-white text-gray-900")
+          }>
+            {/* водяной знак-подсказка на фоне */}
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-10 select-none">
+              <div className="text-5xl font-bold tracking-wider">+19009009090</div>
+            </div>
+
+            <div className="relative">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-semibold">Новое SMS</h3>
+                <button
+                  onClick={() => setShowNewSms(false)}
+                  className={isDark ? "p-2 rounded hover:bg-gray-700" : "p-2 rounded hover:bg-gray-100"}
+                >
+                  <span className="sr-only">Закрыть</span>✕
+                </button>
+              </div>
+
+              <div className="mt-3 space-y-3">
+                <div>
+                  <label className={isDark ? "block text-sm text-gray-300 mb-1" : "block text-sm text-gray-700 mb-1"}>
+                    Номер телефона
+                  </label>
+                  <input
+                    type="tel"
+                    value={newPhone}
+                    onChange={(e) => setNewPhone(e.target.value)}
+                    placeholder="+19009009090"
+                    className={
+                      "w-full px-3 py-2 rounded-lg border focus:outline-none " +
+                      (isDark
+                        ? "bg-gray-700 text-white border-gray-600 focus:border-blue-500"
+                        : "bg-white text-gray-900 border-gray-300 focus:border-blue-500")
+                    }
+                  />
+                </div>
+
+                <div>
+                  <label className={isDark ? "block text-sm text-gray-300 mb-1" : "block text-sm text-gray-700 mb-1"}>
+                    Текст сообщения
+                  </label>
+                  <textarea
+                    rows={4}
+                    value={newText}
+                    onChange={(e) => setNewText(e.target.value)}
+                    placeholder="Введите текст..."
+                    className={
+                      "w-full px-3 py-2 rounded-lg border focus:outline-none resize-y " +
+                      (isDark
+                        ? "bg-gray-700 text-white border-gray-600 focus:border-blue-500"
+                        : "bg-white text-gray-900 border-gray-300 focus:border-blue-500")
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="mt-4 flex items-center justify-end gap-2">
+                <button
+                  onClick={() => setShowNewSms(false)}
+                  className={isDark ? "px-3 py-2 rounded-lg bg-gray-700 hover:bg-gray-600" : "px-3 py-2 rounded-lg bg-gray-100 hover:bg-gray-200"}
+                >
+                  Отмена
+                </button>
+                <button
+                  onClick={sendAdhoc}
+                  disabled={sendingAdhoc}
+                  className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
+                >
+                  {sendingAdhoc ? "Отправка..." : "Отправить"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
