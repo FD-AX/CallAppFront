@@ -23,9 +23,9 @@ const formatTime = (iso) => {
 
 export default function CommunicationsList({
   API_URL = import.meta.env.VITE_API_URL || "http://localhost:8080",
-  AUTH_HEADER = { Authorization: `Bearer ${import.meta.env.VITE_AUTH_TOKEN || "agent_api_key_24"}` },
+  AUTH_HEADER = { Authorization: `Bearer ${import.meta.env.VITE_AUTH_TOKEN || "agent_api_key_23"}` },
   theme = "dark",
-  employeeUsername = import.meta.env.VITE_EMPLOYEE_USERNAME || "agent24",
+  employeeUsername = import.meta.env.VITE_EMPLOYEE_USERNAME || "Agent_011",
 }) {
   const isDark = theme === "dark";
 
